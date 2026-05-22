@@ -1,10 +1,5 @@
-# UltraFast: An Economic Operating System Layer 1
+# UltraFast: An Economic Operating System
 
-**Status**: First draft, pre-implementation. All performance numbers in this document are design targets, not measured results. Targets are stated with their conditions; the document distinguishes design targets, claimed properties of cited prior work, and roadmap items in future tense.
-
-**Version**: Conceptual whitepaper, draft 1 (2026-05-20).
-
----
 
 ## Abstract
 
