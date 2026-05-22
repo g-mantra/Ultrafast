@@ -1,4 +1,4 @@
-# UltraFast: A Unified On-Chain Derivatives Layer 1
+# UltraFast: An Economic Operating System Layer 1
 
 **Status**: First draft, pre-implementation. All performance numbers in this document are design targets, not measured results. Targets are stated with their conditions; the document distinguishes design targets, claimed properties of cited prior work, and roadmap items in future tense.
 
@@ -8,11 +8,25 @@
 
 ## Abstract
 
-UltraFast is a Layer 1 blockchain designed for unified on-chain derivatives. It combines perpetual futures and scalar prediction markets under a single matching engine and a single cross-product margin system. The architecture composes four production-evidenced components: Threshold Simplex consensus with the Minimmit single-round fast path [1, 2], the reth EVM execution client driven via the Engine API [3] with Block-STM optimistic concurrency [4] and Aptos-style aggregator primitives [5], an in-protocol Frequent Batch Auction (FBA) matching engine at a sub-second tick [6], and the QMDB state backend [7]. Matching MEV is addressed by composition rather than by a single primitive: a multi-concurrent-proposer (MCP) consensus layer [8] provides the selective-censorship resistance and hiding that any auction-based mitigation requires [9, 10], FBA collapses intra-tick ordering into a uniform clearing price, and a tokenized-ordering bolt-on [11] handles the few paths that bypass the batch. Performance targets are p50 finality near 200 ms and p99 near 300 ms on the Minimmit happy path with a two-region validator topology, degrading to a roughly 400 ms pessimistic-leader floor under standard Threshold Simplex fallback; achieved finality and throughput pending Phase 0 walking-skeleton validation. UltraFast is a chain, not a token launch: the native asset UFAST exists for staking, bonding and governance, and the full stream of gas and trading fees is denominated in Bitcoin and flows directly to stakers. Fees may be paid in any supported collateral token (USDC, USDT, ETH, MANTRA, and other accepted assets), converted to their BTC-denominated amount at a rate sourced from the on-chain matching engine or from a validator-set oracle. Each supported asset is custodied at a stake-weighted threshold-signature vault derived from the active validator set, using the signature scheme native to its source chain. Where a staker has bonded to a validator, the validator receives a configurable commission and the remainder flows to the delegator.
+UltraFast is a Layer 1 blockchain — an economic operating system that runs multiple workloads on one consensus, execution, and custody stack. The anchor workload is unified on-chain derivatives: perpetual futures and scalar prediction markets, served by a single matching engine and a single cross-product margin system, invoked through gasless turing-incomplete order transactions that bypass the EVM gas mechanism. A data sales market runs as a second native workload, settling subscription and per-query payments for on-chain feeds, datasets, and oracle products. Arbitrary user programs run on the standard EVM lane under gas-metered transactions. The architecture composes four production-evidenced components: Threshold Simplex consensus with the Minimmit single-round fast path [1, 2], the reth EVM execution client driven via the Engine API [3] with Block-STM optimistic concurrency [4] and Aptos-style aggregator primitives [5], an in-protocol Frequent Batch Auction (FBA) matching engine at a sub-second tick [6], and the QMDB state backend [7]. Matching MEV is addressed by composition rather than by a single primitive: a multi-concurrent-proposer (MCP) consensus layer [8] provides the selective-censorship resistance and hiding that any auction-based mitigation requires [9, 10], FBA collapses intra-tick ordering into a uniform clearing price, and a tokenized-ordering bolt-on [11] handles the few paths that bypass the batch. Performance targets are p50 finality near 200 ms and p99 near 300 ms on the Minimmit happy path with a two-region validator topology, degrading to a roughly 400 ms pessimistic-leader floor under standard Threshold Simplex fallback; achieved finality and throughput pending Phase 0 walking-skeleton validation. UltraFast is a chain, not a token launch: the native asset UFAST exists for staking, bonding, and governance, and the full stream of trading, data-market, listing, and EVM gas fees is denominated in Bitcoin and flows directly to stakers. Fee parameter values — trading-fee schedules, listing fees, data-market fees, and the EVM gas-price floor — are set by on-chain governance vote weighted by bonded UFAST stake; the protocol does not hard-code fee levels. Fees may be paid in any supported collateral token (USDC, USDT, ETH, MANTRA, and other accepted assets), converted to their BTC-denominated amount at a rate sourced from the on-chain matching engine or from a validator-set oracle. Each supported asset is custodied at a stake-weighted threshold-signature vault derived from the active validator set, using the signature scheme native to its source chain. Where a staker has bonded to a validator, the validator receives a configurable commission and the remainder flows to the delegator.
 
 ---
 
 ## 1. Introduction
+
+### 1.0 Scope: an economic operating system, not a single-purpose chain
+
+UltraFast is a Layer 1 blockchain that runs multiple workloads on a single consensus, execution, and custody stack — an economic operating system in the same sense that a general-purpose OS runs scheduling, memory management, and I/O for many user programs on shared hardware. Three workloads are first-class at v1:
+
+1. **Derivatives.** Perpetual futures and scalar prediction markets, served by a single matching engine and a single cross-product margin system. Orders are submitted as gasless turing-incomplete typed transactions — `place`, `cancel`, `modify`, `batch-cancel`, `liquidate` — that bypass the EVM gas mechanism and are processed natively by the matching engine. The traded asset is fungible and the order semantics are bounded, so there is no need for arbitrary computation on the order path.
+2. **Data sales market.** A native marketplace for on-chain feeds, datasets, oracle products, and computed metrics. Producers list access tiers (one-shot purchase, time-bounded subscription, per-query metering); buyers pay in any supported collateral; access is gated on-chain by the consumer's payment state, and entitlement is exposed via a system contract that other EVM programs can read in the same call frame they trigger downstream logic.
+3. **General programs on the EVM lane.** Arbitrary user smart contracts under full Cancun-parity EVM semantics, gas-metered, parallelised under Block-STM (§6.2). The matching engine and the data marketplace are exposed to general programs through fixed system-contract ABIs; this is the integration surface for vaults, structured products, liquidators, lending markets, and any other application that needs to read book state or settled data-market entitlements.
+
+Fee parameters for all three workloads — taker and maker fees on the matching engine, per-query and subscription fees on the data marketplace, listing fees, and the EVM gas-price floor — are set by on-chain governance vote weighted by bonded UFAST stake (§13). The protocol does not hard-code fee levels; the genesis configuration is a starting point that governance can subsequently adjust.
+
+The rest of §1 motivates the architecture against the derivatives workload because it is the most demanding by latency and matching complexity. The MEV stack (§8), the custody model (§10), the performance budget (§12), and the validator economics (§13) apply uniformly across all three workloads.
+
+### 1.1 The derivatives workload
 
 On-chain derivatives venues have closed most of the user-experience gap to centralised exchanges in throughput and latency, but they have done so by adopting trust assumptions that the original promise of decentralised finance was supposed to remove. Hyperliquid, the current market leader, operates a closed-source matching engine, a small team-controlled validator set, a stake-weighted multi-signature bridge, and a public mempool from which order content is extractable in advance. Other venues either inherit the Cosmos SDK execution stack (with the recurring gas-refund and precompile-atomicity bug class catalogued in advisory GHSA-mjfq-3qr2-6g84 [12]) or split matching off the chain entirely, re-introducing operator trust.
 
@@ -21,8 +35,9 @@ UltraFast targets the same latency and throughput envelope through a different c
 1. **Sub-second finality at CEX-competitive cost** by pairing Threshold Simplex with Minimmit's single-round fast path on a curated, latency-optimised validator topology, with speculative execution against the proposal to mask consensus latency from the user-facing fill path.
 2. **MEV resistance by construction** through an ordered three-layer stack: MCP at the consensus layer for censorship resistance and pre-trade hiding, in-protocol FBA at the matching layer for uniform-price clearing within each tick, and a tokenized-ordering bolt-on for paths that necessarily bypass the batch (admin, governance, cross-chain message handlers).
 3. **A single matching engine and a single margin system** serving both perpetual futures and scalar prediction markets co-equally, with cross-product margin offsets recognised at the engine level rather than at a wrapper layer.
-4. **Open validator set and validator-operated custody** via threshold signature schemes (FROST [13] / ROAST [14] for Schnorr and Ed25519, DKLs23 [15] for ECDSA), complemented on the Ethereum corridor by a Succinct-style ZK light-client bridge [16] against UltraFast's QMDB state commitment.
-5. **Honest performance disclosure**: every latency claim states its conditions, the pessimistic floor is reported alongside the happy-path target, and design decisions still under evaluation are listed as open rather than narrated as settled.
+4. **Gasless turing-incomplete order transactions** that decouple the trader's cost-to-trade from EVM gas-price volatility. Orders are processed as typed system operations rather than as EVM calls (§6.6); the only fees a trader pays are the governance-set trading fees, denominated in BTC, paid out of the account collateral at fill time.
+5. **Open validator set and validator-operated custody** via threshold signature schemes (FROST [13] / ROAST [14] for Schnorr and Ed25519, DKLs23 [15] for ECDSA), complemented on the Ethereum corridor by a Succinct-style ZK light-client bridge [16] against UltraFast's QMDB state commitment.
+6. **Honest performance disclosure**: every latency claim states its conditions, the pessimistic floor is reported alongside the happy-path target, and design decisions still under evaluation are listed as open rather than narrated as settled.
 
 UltraFast is in the pre-implementation research and architecture phase at the time of this draft. Section 12 distinguishes target metrics from measured ones; Section 16 lists the design decisions still open; Section 14 tabulates the residual risks the architecture deliberately accepts at launch.
 
@@ -69,7 +84,9 @@ Figure 1 summarises the layered architecture. Time and data flow top-to-bottom.
 ```mermaid
 flowchart TB
     subgraph CLIENT[Client]
-        TX[EIP-712 signed order tx]
+        ORDER[Gasless order tx: place / cancel / modify]
+        EVMTX[EVM tx: gas-metered general program]
+        DATAPAY[Data-market purchase or subscription tx]
     end
 
     subgraph CONSENSUS[Consensus and block assembly]
@@ -79,9 +96,10 @@ flowchart TB
     end
 
     subgraph EXEC[Execution]
-        RETH[reth via Engine API]
+        RETH[reth via Engine API for the EVM lane]
         BSTM[Block-STM + Aggregators]
-        FBA[FBA matching system contract]
+        FBA[FBA matching engine]
+        DATA[Data-market system contract]
     end
 
     subgraph CUSTODY[Custody and bridges]
@@ -89,16 +107,22 @@ flowchart TB
         ZK[ZK light-client to Ethereum]
     end
 
-    TX --> MCP --> TS
-    TS --> RETH --> BSTM --> FBA
+    ORDER --> MCP
+    EVMTX --> MCP
+    DATAPAY --> MCP
+    MCP --> TS
+    TS --> RETH --> BSTM
+    BSTM --> FBA
+    BSTM --> DATA
     FBA --> QMDB
+    DATA --> QMDB
     QMDB --> ZK
     QMDB --> TSS
 ```
 
-**Figure 1.** UltraFast layered architecture. Order transactions enter the MCP layer (in v1.1) or directly into the Threshold Simplex proposer pool (in v1), are sequenced into blocks, executed in reth under Block-STM with aggregator primitives for hot-key commutativity, and cleared through the in-protocol FBA system contract at the tick boundary. State is committed to QMDB. Bridge custody is co-operated by the validator set via TSS, with a complementary ZK light-client bridge on the Ethereum corridor.
+**Figure 1.** UltraFast layered architecture. Three transaction types enter the chain: gasless turing-incomplete order transactions for the derivatives workload (§6.5), gas-metered EVM transactions for general user programs (§9.5), and data-market purchase or subscription transactions for the data-sales workload (§9.4). All three enter the MCP layer (at v1.1) or directly into the Threshold Simplex proposer pool (at v1), are sequenced into blocks, and executed in reth under Block-STM with aggregator primitives for hot-key commutativity. Derivatives orders clear through the in-protocol FBA matching engine at the tick boundary; data-market transactions are processed by the data-market system contract; general EVM transactions run under standard gas-metered semantics. State is committed to QMDB. Bridge custody is co-operated by the validator set via TSS, with a complementary ZK light-client bridge on the Ethereum corridor.
 
-The remainder of this document treats each layer in detail: consensus (§5), execution (§6), matching (§7), MEV resistance (§8), products and margin (§9), bridges (§10), privacy tiers (§11), performance (§12), economics and validators (§13), security (§14), related work (§15), open decisions (§16), and future work (§17).
+The remainder of this document treats each layer in detail: consensus (§5), execution (§6), matching (§7), MEV resistance (§8), workloads and margin (§9), bridges (§10), privacy tiers (§11), performance (§12), economics and validators (§13), security (§14), related work (§15), open decisions (§16), and future work (§17).
 
 ---
 
@@ -181,13 +205,25 @@ Speculative execution closes the remaining gap between consensus finality and us
 
 This is the third lever in the latency budget of §12. Without it, even the combination of Minimmit and a two-region topology produces p50 finality in roughly the 280–320 ms range; with it, the target moves to approximately 200 ms p50. The Phase 0 walking-skeleton (§16) validates that the speculative-commit and rollback paths are deterministic and that no observable state mutation under speculation escapes to the user before finality lands.
 
-### 6.5 CLOB as an EVM system contract
+### 6.5 Gasless turing-incomplete order lane
 
-The matching engine is exposed to other on-chain code via a fixed system-contract ABI on the EVM lane. User contracts (vaults, lending markets, liquidators, structured products) read book state synchronously in the same call frame that triggers their downstream logic: best bid, best ask, depth at level, mark price, last clearing price, funding-rate snapshot. Tick-deferred writes (`placeOrder`, `cancelOrder`, `modifyOrder`, `batchCancel`) return synchronously with status `queued for tick T+1`; settlement events fire at tick close.
+Orders to the matching engine enter UltraFast through a dedicated transaction lane that bypasses the EVM gas mechanism entirely. The lane supports a fixed set of typed operations: `place`, `cancel`, `modify`, `batch-cancel`, and `liquidate`. Each operation has a fixed parameter schema, a bounded effect on the orderbook and account state, and no scripting surface. The lane is in this sense turing-incomplete: the only state transitions it can express are those the matching engine itself defines.
 
-This is the deliberate architectural alternative to Hyperliquid's HyperCore-to-HyperEVM async seam. A vault that needs to read the orderbook before deciding whether to rebalance can do so in one transaction frame, rather than marshalling state across a boundary it does not control.
+Why gasless: pricing every order at the EVM gas-price floor would couple a market maker's quote refresh cost to unrelated EVM-lane demand. Market makers at v1 may quote tens of thousands of orders per minute across the supported markets, and pegging that volume to gas-price volatility produces a cost surface institutional makers will not accept. The lane processes orders without per-transaction gas accounting. The only fee a trader pays is the governance-set trading fee (§13), deducted from account collateral at fill time and denominated in BTC.
 
-If the FBA solver fails to clear within tick budget, queued orders revert atomically. No FIFO fallback is provided — a FIFO fallback would re-introduce the ordering MEV the FBA tick is designed to eliminate.
+Why turing-incomplete: the matching engine processes fungible derivative orders with bounded effects, so there is no need for arbitrary computation on the order path. Removing the scripting surface eliminates an entire class of attack vectors — re-entrancy, gas-griefing, opcode-specific bugs — that have repeatedly produced incidents on EVM-native order venues. EVM contracts that need to express conditional logic ("place this order only if mark price is below $X") submit a gas-metered EVM transaction that calls into the system contract surface (§6.6), paying gas for the conditional evaluation and incurring no gas on the resulting order itself.
+
+Each gasless transaction is authenticated by an EIP-712 signature against the account's keyset, replay-protected by a per-account monotonic nonce, and sequenced through the MCP pslice path (§8.1) at v1.1. Gasless transactions and EVM transactions enter Threshold Simplex blocks side by side; the block builder demarcates the two lanes for the executor, and the FBA solver processes the demarcated order set at the tick boundary (§7).
+
+Liquidations are emitted as gasless transactions by the protocol's liquidation engine itself rather than by a user. Their effect is bounded to a single account and a defined set of orderbook entries; they incur no fee and no slashable cost beyond the standard liquidation penalty (§9.1).
+
+### 6.6 CLOB exposure to EVM contracts
+
+The matching engine is also exposed to EVM contracts via a fixed system-contract ABI. User contracts (vaults, lending markets, liquidators, structured products) read book state synchronously in the same call frame that triggers their downstream logic: best bid, best ask, depth at level, mark price, last clearing price, funding-rate snapshot. EVM contracts may also submit orders through the system contract (`placeOrder`, `cancelOrder`, `modifyOrder`, `batchCancel`); these calls return synchronously with status `queued for tick T+1`, settlement events fire at tick close, and the order itself enters the same matching pipeline as gasless-lane orders with no fee differential at fill time. The calling EVM transaction pays gas for its own execution (conditional logic, parameter assembly, downstream effects); the resulting order incurs no additional gas charge.
+
+This dual-entry pattern — gasless lane for raw order flow, EVM system contract for contract-mediated order flow — is the deliberate architectural alternative to Hyperliquid's HyperCore-to-HyperEVM async seam. A vault that needs to read the orderbook before deciding whether to rebalance can do so in one transaction frame, rather than marshalling state across a boundary it does not control.
+
+If the FBA solver fails to clear within tick budget, queued orders revert atomically — gasless-lane and EVM-lane orders alike. No FIFO fallback is provided; a FIFO fallback would re-introduce the ordering MEV the FBA tick is designed to eliminate.
 
 ---
 
@@ -268,9 +304,11 @@ UltraFast targets v2 for re-evaluation, contingent on committee-liveness budgets
 
 ---
 
-## 9. Products
+## 9. Workloads
 
-UltraFast supports two product types as co-equal first-class products: perpetual futures and scalar prediction markets. Both products are served by the same FBA matching engine (§7) and the same unified margin system (§9.3).
+UltraFast supports three workloads at v1. The derivatives workload covers perpetual futures and scalar prediction markets, served by the FBA matching engine of §7 and the unified margin system of §9.3, invoked through the gasless turing-incomplete order lane of §6.5. The data sales workload covers feeds, datasets, and oracle products (§9.4). The general-programs workload covers arbitrary user smart contracts on the EVM lane (§9.5). All three workloads share the same consensus, custody, MEV stack, and validator economics. The derivatives workload is treated first because it sets the latency budget that the rest of the architecture is sized against.
+
+Within the derivatives workload, perpetual futures and scalar prediction markets are co-equal first-class products. Both products are served by the same FBA matching engine (§7) and the same unified margin system (§9.3).
 
 ### 9.1 Perpetual Futures
 
@@ -280,7 +318,7 @@ UltraFast lists perpetual futures (no expiration, continuous-price contracts wit
 - **Leverage**: up to 50× on crypto perps, up to 20× on RWA perps, with per-asset-class caps configurable by governance.
 - **Liquidation**: gradual liquidation engine with an insurance fund backstop. Liquidation penalties route 100 % to the insurance fund, separate from the trading-fee distribution of §13.
 - **Collateral**: USDC as the primary settlement asset, with MANTRA, native BTC / ETH / SOL (held in the validator-operated TSS vaults of §10), yield-bearing assets (stATOM, stETH), and MANTRA RWA tokens accepted as additional collateral.
-- **Listing**: the HIP-3-equivalent system contract (§9.5) governs builder-deployed perpetual markets; builders post a UFAST stake bond and earn a configurable share of fees from their markets, with the bond slashable for oracle manipulation, malformed funding, or failed-liquidation cascades attributable to market-config errors.
+- **Listing**: the HIP-3-equivalent system contract (§9.6) governs builder-deployed perpetual markets; builders post a UFAST stake bond and earn a configurable share of fees from their markets, with the bond slashable for oracle manipulation, malformed funding, or failed-liquidation cascades attributable to market-config errors.
 
 ### 9.2 Scalar Prediction Markets
 
@@ -316,7 +354,41 @@ Until the choice is made, this whitepaper states the design intent (unified marg
 
 **Failure-isolation property.** Liquidation of one position triggers margin recalculation across the account but does not propagate liquidation to unrelated positions outside the cross-margin set. The risk-engine specification (deferred to Phase B per §16) will state this property formally.
 
-### 9.4 Listing Primitives
+### 9.4 Data Sales Market
+
+UltraFast runs a native data sales market as a second workload, served by a dedicated system contract on the EVM lane and settled in the same BTC fee distribution path as the derivatives workload. The market's purpose is to give on-chain producers — oracles, index providers, statistical-arbitrage feeds, RWA reference rates, computed risk metrics — a contract-mediated way to charge for access without negotiating bilateral agreements off-chain.
+
+**Listing.** A producer registers a dataset by deploying a `DataProduct` contract that declares: the data schema (a typed record format), the access tiers offered, the price per tier (in BTC-denominated terms, payable in any supported collateral), the payout schedule (immediate vs vesting), and the dispute policy. Listing requires a UFAST stake bond, slashable for misrepresentation of the data product (declared schema not matching the actual delivery, declared SLA not met, materially misleading metadata). The bond size is set by governance and scales by claimed data-product class — uncurated free-form data products carry a small bond; oracle products that other contracts may depend on carry a larger bond and an audit gate.
+
+**Access tiers.** Three tier classes are supported at v1, each with its own settlement semantics:
+
+- **One-shot purchase.** A buyer pays a fixed BTC-equivalent price; the contract emits an entitlement event the producer can read to release a one-time delivery (typically a dataset hash, decryption key, or signed payload). The on-chain record is the auditable proof of purchase.
+- **Time-bounded subscription.** A buyer pays for a window (hourly, daily, monthly); the contract maintains a per-buyer expiry timestamp. Other EVM contracts read the entitlement state via a system-contract call in the same frame they process downstream logic ("is account X currently subscribed to feed Y?"), and pay gas only for the gating check rather than for a remote call to an off-chain entitlement service.
+- **Per-query metering.** A buyer pre-funds a balance; each query against the data product debits a unit. The producer reports per-query consumption in batched commit transactions that the contract checks against attestation rules before debiting. Per-query is the dominant model for high-frequency feeds where flat subscription overcharges low-volume consumers.
+
+**Settlement.** Buyer payments accrue to the data product's `DataProduct` contract; the producer withdraws periodically per the contract's payout schedule. The protocol takes a governance-set data-market fee (zero at genesis, with upper-bound cap set by §13) which routes to the trading-fee distribution module described in §13.1 and flows in BTC to stakers alongside the derivatives trading fees.
+
+**Privacy.** Three privacy tiers are supported:
+
+- **Public delivery.** The data is delivered on-chain in cleartext; the on-chain record is itself the data. Suitable for indices, reference rates, and any data that has no embedded confidentiality.
+- **Encrypted-to-buyer delivery.** The producer publishes the data encrypted under a per-buyer key derived from the buyer's account keyset; only the paying buyer can decrypt. The on-chain record is the ciphertext and the integrity attestation.
+- **Off-chain delivery, on-chain entitlement.** The on-chain `DataProduct` exposes only the entitlement state and the integrity attestation; the actual data is served off-chain (HTTPS endpoint, IPFS pointer, or producer-operated relay) and the off-chain server checks entitlement against the on-chain state. This is the dominant pattern for large datasets (gigabyte-scale time series, machine-learning training sets) where on-chain delivery is prohibitive.
+
+**Dispute.** Buyers can challenge a delivery as not matching the declared schema or SLA within a configurable dispute window. Challenges are arbitrated by the same optimistic-oracle path used by scalar prediction markets (§9.2) — the dispute oracle decision is the residual trust point in the data-market design and is one of the open decisions in §16.
+
+**MEV protections.** The data-market entitlement state is exposed via a system contract under the same MEV stack that governs the derivatives workload: MCP at the consensus layer (§8.1) prevents selective censorship of data-purchase transactions, and tokenized ordering (§8.3) governs the few admin paths that bypass MCP (producer registration, governance fee changes). Entitlement reads from EVM contracts read the committed state at the start of the calling tick; entitlement writes (purchase, subscription renewal) flow through the same FBA-tick-boundary commit path as derivative orders, so a buyer's purchase cannot be front-run by an observer of the pending transaction.
+
+**Why on-chain.** The argument for an on-chain data marketplace is not that on-chain matching is faster than an HTTPS API; it is that on-chain settlement is the only path that gives a producer auditable receivables without per-customer billing infrastructure, gives a buyer cryptographic proof of payment without trusting a centralised invoicing system, and gives a third-party EVM contract (a vault, a structured product, a lending market) a way to read entitlement state in the same frame it processes a trade — without trusting an off-chain entitlement service or signing a long-form data-licence agreement.
+
+### 9.5 General Programs on the EVM Lane
+
+UltraFast runs a full-Cancun-parity EVM lane (§6.1) on which arbitrary user smart contracts execute under standard gas-metered transactions, parallelised by Block-STM (§6.2) with aggregator primitives (§6.3) available for hot-key contention. Custom precompiles cover matching-engine reads, oracle reads, the aggregator surface, and the data-marketplace entitlement surface — never state mutation, the property whose violation produced the Cosmos-EVM bug class catalogued in advisory GHSA-mjfq-3qr2-6g84 [12].
+
+The intent of the EVM lane is composability: any program that wants to read the orderbook, place orders contingent on conditions, settle data-market entitlements, or compose strategies across the derivatives workload and the data marketplace runs here. Vaults, lending markets, structured products, liquidation bots, builder-code aggregators, and the protocol's own listing primitives (§9.6) and Community Vault (§9.7) are all EVM contracts.
+
+EVM-lane fees are gas-metered against a governance-set gas-price floor (§13). The gas-price floor exists to throttle adversarial workloads from saturating execution budget; ordinary user programs pay gas at the prevailing fee market on top of the floor. The same BTC-denominated payment-currency-conversion mechanism that applies to derivatives trading fees (§13.1) applies to EVM gas: gas is denominated in BTC at the protocol layer and payable in any supported collateral at the conversion rate of the immediately preceding tick.
+
+### 9.6 Listing Primitives
 
 Three system contracts on the EVM lane govern market deployment:
 
@@ -326,7 +398,7 @@ Three system contracts on the EVM lane govern market deployment:
 
 Curation is governance-gated per asset *class*: crypto perps permissionless once the audit milestones of §16 are met; RWA perps gated on compliance clearance. Per-class leverage caps and liquidation-tier bands address the risk-management implications (e.g. a meme-coin perp at 50× could in principle exhaust an insurance fund if uncapped).
 
-### 9.5 Community Vault
+### 9.7 Community Vault
 
 UltraFast's protocol-owned-liquidity vault is multi-strategy from day 1, rather than monolithic. Hyperliquid's HLP is the existence proof that a monolithic vault scales to roughly \$500M before its risk-isolation properties bind. Segmenting strategies lets total vault TVL scale without diluting per-strategy Sharpe ratio and isolates drawdown to its originating strategy.
 
@@ -451,9 +523,20 @@ Hyperliquid reports approximately 70 ms finality on its current BFT implementati
 
 UltraFast is a chain, not a token launch. This section covers validator staking mechanics, fee flow, and the role of the native asset UFAST. It does not cover supply schedule, distribution, vesting, or any token-launch mechanic; those questions, where applicable, belong to the MANTRA ecosystem's existing tokenomics documentation and are deliberately not re-stated here.
 
-### 13.1 Real yield, denominated in Bitcoin
+### 13.1 Real yield, denominated in Bitcoin, with fee levels set by vote
 
-The protocol unit of account for fees is Bitcoin. Gas fees, trading fees, and builder-code accruals are all denominated in BTC at the protocol layer rather than in UFAST. The chain accepts native BTC deposits via the stake-weighted threshold-signature vault of §10.1, and the distribution module pays out to stakers in BTC drawn from that vault.
+The protocol unit of account for fees is Bitcoin. All fees — derivatives trading fees (taker and maker), data-market subscription and per-query fees (§9.4), listing fees (§9.6), builder-code accruals, and EVM gas (§9.5) — are denominated in BTC at the protocol layer rather than in UFAST. The chain accepts native BTC deposits via the stake-weighted threshold-signature vault of §10.1, and the distribution module pays out to stakers in BTC drawn from that vault.
+
+**Fee parameter values are set by governance vote.** The protocol does not hard-code fee levels. A governance vote weighted by bonded UFAST stake sets the following parameters, each independently:
+
+- The taker and maker fee schedules per derivatives market (default: a single schedule across all crypto perps, with RWA and prediction-market schedules separately tunable).
+- The fee-tier breakpoints by 30-day rolling volume (per dYdX-v4 [38] precedent), and the rebate floor for designated market makers.
+- The data-market fee, as a per-`DataProduct` surcharge or as a flat-rate skim on settlement (the structural choice is itself an open decision in §16, with surcharge as the working assumption).
+- The listing fees for the HIP-1 token-issuance auction (Dutch-auction reserve price) and the HIP-3 builder-deployed perp bond size.
+- The EVM gas-price floor and the gas-price scaling rule (the working assumption is EIP-1559 base-fee dynamics on top of a governance-set floor).
+- The validator commission cap range (working assumption: 5 % floor, 20 % ceiling, per §13.1 below) and any per-validator override allowance.
+
+Each parameter has a configurable rate-limit and a configurable supermajority threshold — fee-floor decreases and fee-ceiling increases can be set to require a higher bar than ordinary fee-tier adjustments, so that fee policy is not whipsawed by short-window stake mobilisations. The genesis configuration of each parameter is a sensible default; governance can subsequently move any parameter within protocol-defined bounds, and can extend the bounds by a separate higher-threshold vote. The full schedule of which parameters are governance-mutable, which require supermajority, and which require a hard-fork to alter is one of the open items in §16.
 
 **Payment medium.** A trader is not required to hold a BTC balance to transact. Fees may be paid in any supported collateral asset — USDC, USDT, ETH, MANTRA, the native gas tokens of supported source chains, and the other assets enumerated in §9.1 as accepted collateral. At fee-collection time, the trader's payment in token $T$ is converted to its BTC-denominated equivalent using one of two channels:
 
@@ -485,7 +568,7 @@ UFAST is the staking, bonding, and governance asset. It is not the fee currency:
 - **Bonding for consensus and TSS custody.** Validators must stake UFAST to participate; bonded value backs both consensus safety slashing and TSS bridge slashing, including the stake-weighted BTC vault of §10.1.
 - **Delegation.** UFAST holders may bond their stake to a validator, in which case the validator receives the commission share defined in §13.1 and the delegator receives the remainder. Holders who run their own validator, or who self-stake without delegating, receive the full per-stake share with no commission split.
 - **Security-baseline inflation, low base (~3–5 %).** A low base inflation rate provides a UFAST-denominated security floor independent of BTC fee revenue. Once BTC fee distributions sustain validator economics, governance may vote to pause inflation entirely.
-- **Governance.** UFAST holders vote on protocol parameter changes, the validator-commission cap, market deployments, and treasury allocations.
+- **Governance.** UFAST holders vote on protocol parameter changes — including the full set of fee parameters in §13.1 (trading fees, data-market fees, listing fees, EVM gas-price floor), the validator-commission cap, derivatives market deployments, data-product class gates (which classes of `DataProduct` carry which bond size, §9.4), treasury allocations, and the rate-limit and supermajority rules governing parameter changes themselves.
 
 The exact inflation parameter and the question of whether to layer an optional UFAST buyback module on top of the direct BTC distribution are open decisions in §16.
 
@@ -623,6 +706,21 @@ The following decisions are open at the time of this draft. They are listed here
 - **Fee-payment conversion-rate source** — per supported token, the BTC-equivalence rate at fee collection (§13.1) drawn from the on-chain FBA clearing price versus a stake-weighted validator-oracle median versus a depth-thresholded fallback from FBA to oracle (working assumption: depth-thresholded fallback, with thresholds parameterised per pair).
 - **Fee-vault rebalance cadence** — continuous swap of non-BTC fee receipts into the BTC vault at each tick via a system-contract market order versus batched periodic sweeps versus per-asset thresholds (decision pending market-depth profiling in Phase 0 follow-on).
 - **HIP-1-equivalent auction-proceeds destination** — burned (Hyperliquid pattern) versus routed to community treasury versus split.
+- **Governance fee-mutation rules** — which fee parameters (§13.1) require a simple-majority vote, which require a configurable supermajority, and which require a hard-fork. Working assumption: ordinary fee-tier adjustments at simple majority within governance-set bounds, bound-widening at supermajority, structural changes (fee-currency, fee-routing) at hard-fork.
+
+**Data sales market.**
+
+- **Data-market fee structure** — per-`DataProduct` surcharge added on top of producer-set price versus flat-rate skim on settlement versus tiered by data-product class (working assumption: per-`DataProduct` surcharge with class-based tier ceilings).
+- **Data-product class taxonomy and bond schedule** — the set of declared classes (uncurated free-form, curated dataset, oracle product, regulated reference rate, etc.), the bond size per class, and the audit gate for each class. Working assumption: three-tier (uncurated / curated / oracle) with bond sizes set by governance.
+- **Data-market dispute oracle** — the same optimistic oracle used for scalar prediction markets (§9.2) versus a separately-staked dispute committee versus per-product producer-selected arbitrators with a governance-set deny-list.
+- **Off-chain delivery attestation** — TEE-attested producer service versus producer-signed delivery receipts only versus optional ZK proof-of-correct-delivery (post-v2).
+- **Per-query metering granularity** — per-call versus per-bytes-returned versus per-compute-cost; whether the producer self-reports or the chain re-derives from on-chain query state.
+
+**EVM lane and gas.**
+
+- **EVM gas-price scaling rule** — EIP-1559 base-fee dynamics on top of a governance-set floor (working assumption) versus a flat governance-set price versus a per-block-fullness dynamic with no governance floor.
+- **EVM-lane order-write parity** — should EVM contracts placing orders via the system contract (§6.6) pay the same trading-fee tier as gasless-lane orders (working assumption) versus a higher tier reflecting the additional execution cost versus a lower tier to encourage programmatic flow.
+- **Gasless-lane DoS budget** — how the per-account rate of gasless transactions is bounded to prevent unfunded order spam, given that the lane carries no per-transaction gas cost. Working assumption: per-account credit budget burned on cancel-without-fill and refilled on fill, plus a global per-account hard cap per tick.
 
 ### 16.1 Resolution path
 
@@ -657,13 +755,15 @@ This section lists planned work in future tense. Roadmap items are not present-t
 
 **Threshold-encrypted mempool revisit.** A re-evaluation of threshold-encrypted mempools (Shutter, Ferveo, TrX) at v2 contingent on committee liveness reaching sub-100 ms (§8.5).
 
-**Formal-verification umbrella.** TLA+ specifications will be produced for consensus safety (Threshold Simplex + Minimmit under UltraFast's parameters), MCP censorship-resistance (with the v1.1 rollout), FBA no-intra-tick-MEV, and the risk engine's no-negative-equity property. The specifications will be composed at the end of Phase A to prove the composition is liveness-trap-free.
+**Formal-verification umbrella.** TLA+ specifications will be produced for consensus safety (Threshold Simplex + Minimmit under UltraFast's parameters), MCP censorship-resistance (with the v1.1 rollout), FBA no-intra-tick-MEV, the risk engine's no-negative-equity property, and the gasless-lane DoS budget invariant (§16). The specifications will be composed at the end of Phase A to prove the composition is liveness-trap-free.
+
+**Data marketplace v2.** The v1 data-market design (§9.4) ships with the three access-tier classes and three privacy tiers, settled in BTC through the same fee path as the derivatives workload. v2 work will extend the marketplace along three axes: ZK proof-of-correct-delivery for off-chain-delivered datasets (replacing TEE-attested producer services where the buyer-side trust assumption matters), composable data-product bundling (a single subscription transaction that pre-funds multiple correlated products at a discount), and a producer-side reputation index derived from on-chain dispute outcomes. The MEV protections of the v1 marketplace are unchanged; only the trust surface for delivery and the listing-experience surface are extended.
 
 ---
 
 ## 18. Conclusion
 
-UltraFast composes four production-evidenced components — Threshold Simplex with Minimmit, reth driven via the Engine API with Block-STM and aggregators, in-protocol FBA as an EVM system contract, and QMDB — to target CEX-competitive latency without inheriting the trust assumptions that have characterised current on-chain derivatives venues. The composition has not previously been shipped in one chain; the Phase 0 walking-skeleton is the validation gate that converts the latency targets into measured numbers. The MEV stack composes three layers in a fixed order — MCP, then FBA, then tokenized ordering — and names the residual vectors explicitly rather than claiming an MEV-free property. Perpetual futures and scalar prediction markets are served as co-equal products by the same matching engine and the same margin system, with the cross-product risk model called out as an open decision rather than narrated as settled. Custody is provided by a validator-operated TSS scheme with a bond-to-custodied-value cap, complemented on the Ethereum corridor by a ZK light-client bridge that does not collapse into a marketing claim of trustlessness. The chain is not a token launch: gas and trading fees are denominated in Bitcoin and the full stream flows to stakers — payable in any supported collateral asset at a converted-to-BTC rate, paid out in BTC, distributed directly to self-stakers and to delegators net of a validator commission where a staker has bonded to a validator — and the native asset UFAST exists for staking, bonding, and governance.
+UltraFast composes four production-evidenced components — Threshold Simplex with Minimmit, reth driven via the Engine API with Block-STM and aggregators, in-protocol FBA matching, and QMDB — into an economic operating system that runs three workloads on one stack: derivatives (perpetual futures and scalar prediction markets, invoked through a gasless turing-incomplete order lane), a native data sales market, and arbitrary user programs on the EVM lane. The composition has not previously been shipped in one chain; the Phase 0 walking-skeleton is the validation gate that converts the latency targets into measured numbers. The MEV stack composes three layers in a fixed order — MCP, then FBA, then tokenized ordering — and names the residual vectors explicitly rather than claiming an MEV-free property. Perpetual futures and scalar prediction markets are served as co-equal products by the same matching engine and the same margin system, with the cross-product risk model called out as an open decision rather than narrated as settled. Custody is provided by a validator-operated TSS scheme with a bond-to-custodied-value cap, complemented on the Ethereum corridor by a ZK light-client bridge that does not collapse into a marketing claim of trustlessness. The chain is not a token launch: trading, data-market, listing, and EVM gas fees are denominated in Bitcoin, set by on-chain governance vote across all workloads, and the full stream flows to stakers — payable in any supported collateral asset at a converted-to-BTC rate, paid out in BTC, distributed directly to self-stakers and to delegators net of a validator commission where a staker has bonded to a validator — and the native asset UFAST exists for staking, bonding, and governance.
 
 The document distinguishes design targets from measurements, names what is open, and surfaces residual risks. Phase 0 begins the work of converting those targets into numbers.
 
