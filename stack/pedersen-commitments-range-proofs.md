@@ -4,13 +4,13 @@
 
 UltraFast is a pre-implementation Layer 1 from the MANTRA team carrying perpetual futures, scalar prediction markets, a data marketplace, and an EVM lane. Its privacy model is tiered (§11). The default lit tier publishes every order, fill, and position on-chain; the dark-pool tiers (TEE at v1.5, ZK + MPC at v2+) hide the full pre- and post-trade order detail at the cost of either enclave-vendor trust or heavy proving overhead. Between these extremes sits the **position-private** tier, which is the slot Pedersen commitments and range proofs fill.
 
-The position-private tier hides three specific quantities — **position sizes, margin ratios, and liquidation levels** — by storing them as Pedersen commitments and attaching range proofs that bound the committed values without revealing them. The validator set and outside observers see commitment blobs and small proofs; they do not see how large a trader's position is, how close that position is to liquidation, or what margin ratio it carries. Counterparties to a fill still settle through the public margin engine, so collateral solvency is enforced; what is masked is the exposure profile that would otherwise let MEV searchers and competing traders snipe known liquidation prices or fade visibly large positions.
+The position-private tier hides three specific quantities - **position sizes, margin ratios, and liquidation levels** - by storing them as Pedersen commitments and attaching range proofs that bound the committed values without revealing them. The validator set and outside observers see commitment blobs and small proofs; they do not see how large a trader's position is, how close that position is to liquidation, or what margin ratio it carries. Counterparties to a fill still settle through the public margin engine, so collateral solvency is enforced; what is masked is the exposure profile that would otherwise let MEV searchers and competing traders snipe known liquidation prices or fade visibly large positions.
 
 Two design points are worth being explicit about.
 
 First, this tier is the **baseline privacy step that does not require a TEE or a full ZK matching engine**. The cryptography has been deployed in production for over five years on Monero, Grin, Beam, and MobileCoin; the constructions are non-interactive, transparent (no trusted setup with Bulletproofs), and well audited. The position-private tier therefore gives users meaningful confidentiality without committing UltraFast to enclave attestation in v1 or to MPC matching latency in v2.
 
-Second, the position-private tier **targets v2 and is not on the v1 critical path** (§11 table; §17). The whitepaper's v1 ships with the lit tier only; v1.5 adds the single-vendor TEE dark pool; v2 adds the position-private tier alongside the multi-vendor TEE phase. The position-private framework is also **independent of the threshold-encrypted mempool revisit** discussed at the end of §11 — the §8.5 mempool decision is separate plumbing and is not assumed by this tier.
+Second, the position-private tier **targets v2 and is not on the v1 critical path** (§11 table; §17). The whitepaper's v1 ships with the lit tier only; v1.5 adds the single-vendor TEE dark pool; v2 adds the position-private tier alongside the multi-vendor TEE phase. The position-private framework is also **independent of the threshold-encrypted mempool revisit** discussed at the end of §11 - the §8.5 mempool decision is separate plumbing and is not assumed by this tier.
 
 UltraFast does not yet specify the curve, the exact range-proof flavour, or whether commitments are scoped per-position or per-account. Those choices are open; the whitepaper commits only to the family of constructions (Pedersen commitments plus range proofs over positions and margin ratios).
 
@@ -23,9 +23,9 @@ A Pedersen commitment to a scalar value `v` is `C = g^v · h^r` (multiplicative 
 - **Perfectly hiding.** Because `r` is uniform, `C` is statistically indistinguishable from a random group element regardless of `v`. An unbounded adversary still cannot recover `v`.
 - **Computationally binding.** Opening `C` to a different `v'` would require finding `log_G(H)`, which is hard under the discrete-logarithm assumption on the chosen group.
 
-(Choosing a different parameterisation can swap these — statistically binding and computationally hiding — but the perpetually-hiding flavour is the standard one used in confidential transactions.)
+(Choosing a different parameterisation can swap these - statistically binding and computationally hiding - but the perpetually-hiding flavour is the standard one used in confidential transactions.)
 
-The second property that makes Pedersen commitments load-bearing for ledgers is **additive homomorphism**: `C(v1, r1) + C(v2, r2) = C(v1 + v2, r1 + r2)`. A protocol can verify that committed inputs equal committed outputs in commitment space without ever opening any of them — the "value-balance" check that Monero's RingCT, Grin, Beam, and Penumbra all rely on. Penumbra extends this to multi-asset balances: each Penumbra action commits to a `(value, asset)` pair, and a transaction is valid iff the homomorphic sum is a commitment to a zero balance, evaluated per asset type.
+The second property that makes Pedersen commitments load-bearing for ledgers is **additive homomorphism**: `C(v1, r1) + C(v2, r2) = C(v1 + v2, r1 + r2)`. A protocol can verify that committed inputs equal committed outputs in commitment space without ever opening any of them - the "value-balance" check that Monero's RingCT, Grin, Beam, and Penumbra all rely on. Penumbra extends this to multi-asset balances: each Penumbra action commits to a `(value, asset)` pair, and a transaction is valid iff the homomorphic sum is a commitment to a zero balance, evaluated per asset type.
 
 The hole that homomorphism alone leaves is **overflow / negative-value attacks**: because group arithmetic is modular, a committer could claim a "negative" amount and create value out of thin air. Range proofs close this hole.
 
@@ -35,27 +35,27 @@ A range proof attached to a commitment `C` proves, in zero knowledge, that the v
 
 The history of practical range-proof constructions, in roughly chronological order:
 
-- **Bit-decomposition + Sigma-protocol range proofs.** The original confidential-transactions construction (Maxwell, 2015) wrote out `v` as a sum of bit-commitments and proved each bit was 0 or 1 with a Sigma protocol. Linear in `n` and large in practice — a 64-bit range proof took several kilobytes per output.
-- **Bulletproofs (Bünz, Bootle, Boneh, Poelstra, Wuille, Maxwell, IEEE S&P 2018).** Non-interactive zero-knowledge with no trusted setup. Proof size is `2·log₂(n) + 9` group and field elements — logarithmic in `n` rather than linear. Aggregating `m` range proofs adds only `O(log m)` group elements over the cost of a single proof, which made multi-output transactions dramatically cheaper. Proving and verification are linear in `n` (and in `m·n` for aggregates). The construction is based on the discrete-log assumption and uses an inner-product argument that has since been reused widely outside range proofs.
+- **Bit-decomposition + Sigma-protocol range proofs.** The original confidential-transactions construction (Maxwell, 2015) wrote out `v` as a sum of bit-commitments and proved each bit was 0 or 1 with a Sigma protocol. Linear in `n` and large in practice - a 64-bit range proof took several kilobytes per output.
+- **Bulletproofs (Bünz, Bootle, Boneh, Poelstra, Wuille, Maxwell, IEEE S&P 2018).** Non-interactive zero-knowledge with no trusted setup. Proof size is `2·log₂(n) + 9` group and field elements - logarithmic in `n` rather than linear. Aggregating `m` range proofs adds only `O(log m)` group elements over the cost of a single proof, which made multi-output transactions dramatically cheaper. Proving and verification are linear in `n` (and in `m·n` for aggregates). The construction is based on the discrete-log assumption and uses an inner-product argument that has since been reused widely outside range proofs.
 - **Bulletproofs+ (Chung, Han, Ju, Kim, Seo, eprint 2020/735).** Refines the inner-product argument; produces proofs roughly 96 bytes smaller than a Bulletproofs proof regardless of output count, with slightly faster verification. Adopted by Monero in its August 2022 hard fork ("Bulletproofs+").
 - **Bulletproofs++ (Eagen et al.).** Further size reduction (~38% over base Bulletproofs in reported deployments). Beldex's "Obscura" hardfork scheduled for late 2025 is one of the first major production deployments.
 - **SNARK-based range proofs.** A range check is just an arithmetic-circuit constraint, so any general-purpose SNARK (Groth16, PLONK, Halo2, STARKs) can prove it. The trade-off flips: proofs are tiny and constant-size, verification is fast (often constant time), but proving is much more expensive and many constructions (Groth16, original PLONK) require a trusted setup. Halo2 (PLONK arithmetisation, IPA-based, no trusted setup) is the in-production SNARK that Zcash's Orchard pool has used since the NU5 upgrade in May 2022; the same stack is used by Scroll, Taiko, and the Ethereum Foundation's PSE work.
 
 ### Implementations
 
-- **`dalek-cryptography/bulletproofs`** — pure-Rust Bulletproofs over the Ristretto group on Curve25519. Audited by Quarkslab in 2019 (commissioned by Tari Labs); no critical findings. The reference Rust implementation for the wider ecosystem.
-- **Monero** — production C++ Bulletproofs since the October 2018 hardfork, replacing the earlier Borromean-ring range proofs and cutting per-transaction range-proof size from kilobytes to a few hundred bytes. Migrated to Bulletproofs+ in August 2022.
-- **Grin and Beam** — Rust (Grin) and C++ (Beam) Mimblewimble implementations using Pedersen commitments end-to-end (no addresses, only commitments and kernels) plus Bulletproofs for ranges. Live since 2019.
-- **MobileCoin** — Pedersen + RingCT-style transactions on a CCF / SGX-attested ledger.
-- **Penumbra** — Rust Cosmos-SDK chain; Pedersen commitments over `(value, asset)` pairs with a homomorphic value-balance argument, combined with Groth16/PLONK circuits for the rest of each action. Audited by zkSecurity in 2023.
-- **Aztec** — UTXO ("notes") private state on Ethereum; Pedersen hashes and commitments are used for note commitments inside Noir/Plonk circuits.
-- **Zcash Orchard / Halo2** — Pedersen commitments are still used for note commitments; the range and spend logic moved into Halo2 circuits with the May 2022 NU5 upgrade, retiring the per-output Bulletproofs that Sapling did not actually use (Sapling used Groth16, not Bulletproofs — a common confusion).
+- **`dalek-cryptography/bulletproofs`** - pure-Rust Bulletproofs over the Ristretto group on Curve25519. Audited by Quarkslab in 2019 (commissioned by Tari Labs); no critical findings. The reference Rust implementation for the wider ecosystem.
+- **Monero** - production C++ Bulletproofs since the October 2018 hardfork, replacing the earlier Borromean-ring range proofs and cutting per-transaction range-proof size from kilobytes to a few hundred bytes. Migrated to Bulletproofs+ in August 2022.
+- **Grin and Beam** - Rust (Grin) and C++ (Beam) Mimblewimble implementations using Pedersen commitments end-to-end (no addresses, only commitments and kernels) plus Bulletproofs for ranges. Live since 2019.
+- **MobileCoin** - Pedersen + RingCT-style transactions on a CCF / SGX-attested ledger.
+- **Penumbra** - Rust Cosmos-SDK chain; Pedersen commitments over `(value, asset)` pairs with a homomorphic value-balance argument, combined with Groth16/PLONK circuits for the rest of each action. Audited by zkSecurity in 2023.
+- **Aztec** - UTXO ("notes") private state on Ethereum; Pedersen hashes and commitments are used for note commitments inside Noir/Plonk circuits.
+- **Zcash Orchard / Halo2** - Pedersen commitments are still used for note commitments; the range and spend logic moved into Halo2 circuits with the May 2022 NU5 upgrade, retiring the per-output Bulletproofs that Sapling did not actually use (Sapling used Groth16, not Bulletproofs - a common confusion).
 
 ### Comparison to other commitment schemes
 
-- **Hash / Merkle commitments** — perfectly binding and very cheap, but not homomorphic. Useful for membership proofs (Merkle trees of note commitments), not for value-balance arguments.
-- **KZG polynomial commitments** — homomorphic over polynomials, constant-size openings, but require a trusted setup ceremony and are not the right primitive for committing to a single scalar amount.
-- **ElGamal commitments** — additively homomorphic, support encrypted-balance account models (no UTXO required), but each commitment is twice the size and supports decryption by a key holder, which is sometimes a feature (auditable confidentiality) and sometimes a leak. Some recent designs prefer ElGamal precisely because it preserves the account model that Pedersen forces away.
+- **Hash / Merkle commitments** - perfectly binding and very cheap, but not homomorphic. Useful for membership proofs (Merkle trees of note commitments), not for value-balance arguments.
+- **KZG polynomial commitments** - homomorphic over polynomials, constant-size openings, but require a trusted setup ceremony and are not the right primitive for committing to a single scalar amount.
+- **ElGamal commitments** - additively homomorphic, support encrypted-balance account models (no UTXO required), but each commitment is twice the size and supports decryption by a key holder, which is sometimes a feature (auditable confidentiality) and sometimes a leak. Some recent designs prefer ElGamal precisely because it preserves the account model that Pedersen forces away.
 
 ### Trade-offs that matter for UltraFast
 
@@ -78,7 +78,7 @@ Pedersen commitments are textbook cryptography from 1991. Bulletproofs have been
 - [Monero becomes Bulletproof (Digital Asset Research)](https://medium.com/digitalassetresearch/monero-becomes-bulletproof-f98c6408babf)
 - [Penumbra Assets and Values documentation](https://protocol.penumbra.zone/main/assets.html)
 - [zkSecurity audit of Penumbra's circuits](https://www.zksecurity.xyz/blog/posts/penumbra/)
-- [Aztec UTXO syntax — partial commitments](https://forum.aztec.network/t/utxo-syntax-3-support-for-partial-commitments/46)
+- [Aztec UTXO syntax - partial commitments](https://forum.aztec.network/t/utxo-syntax-3-support-for-partial-commitments/46)
 - [Explaining Halo 2 (Electric Coin Company)](https://electriccoin.co/blog/explaining-halo-2/)
 - [On the Security of Halo2 (Kudelski Security Research)](https://kudelskisecurity.com/research/on-the-security-of-halo2-proof-system)
 - [Bulletproofs and Mimblewimble (Tari Labs University)](https://tlu.tarilabs.com/cryptography/bulletproofs-and-mimblewimble)
